@@ -1,0 +1,51 @@
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+env/
+
+# ==============================
+# IDE
+# ==============================
+.vscode/
+.idea/
+
+# ==============================
+# OS files
+# ==============================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Windows downloaded-file metadata
+**/*Zone.Identifier*
+
+# ==============================
+# Dataset audio
+# ==============================
+data/raw/*/audio/
+data/raw/*/wavs/
+data/raw/*/clips/
+
+# ==============================
+# Generated / processed data
+# ==============================
+data/processed/
+
+# ==============================
+# ML outputs
+# ==============================
+checkpoints/
+models/
+*.pt
+*.pth
+*.onnx
+
+# Logs
+logs/
+*.log
