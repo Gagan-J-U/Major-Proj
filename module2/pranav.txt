@@ -1,0 +1,767 @@
+# Module 2 — Stuttering Type Classification
+
+## 1. Objective
+
+Build a model that takes a **3-second speech audio clip** and classifies the stuttering event into one of five categories:
+
+1. **Block**
+2. **Prolongation**
+3. **Sound Repetition**
+4. **Word Repetition**
+5. **Interjection**
+
+The module is a standard **5-class audio classification system**.
+
+---
+
+# 2. Input specification
+
+Every input to the trained model should follow a fixed format.
+
+```text
+Format: WAV
+Duration: 3 seconds
+Sample rate: 16 kHz
+Channels: Mono
+Encoding: PCM
+```
+
+Example:
+
+```text
+event_001.wav
+```
+
+The model should internally handle the audio preprocessing required by the selected pretrained model.
+
+### Input API
+
+```python
+result = classify_event("event_001.wav")
+```
+
+---
+
+# 3. Output specification
+
+The output should contain:
+
+* predicted class
+* confidence
+* probability for every class
+
+Example:
+
+```json
+{
+    "segment_id": "event_001",
+    "predicted_type": "Sound Repetition",
+    "confidence": 0.91,
+    "probabilities": {
+        "Block": 0.02,
+        "Prolongation": 0.03,
+        "Sound Repetition": 0.91,
+        "Word Repetition": 0.02,
+        "Interjection": 0.02
+    }
+}
+```
+
+This format should be frozen before development so that the rest of your project can consume the model without depending on its implementation.
+
+---
+
+# 4. Dataset
+
+## Primary dataset: SEP-28k
+
+Use the official **SEP-28k** dataset from Apple.
+
+[SEP-28k GitHub repository](https://github.com/apple-aiml-research/ml-stuttering-events-dataset?utm_source=chatgpt.com)
+
+The dataset contains approximately:
+
+* **28,000** three-second clips
+* around **4,000 additional FluencyBank clips**
+* annotations from **three annotators**
+* multiple stuttering-event categories
+
+The five classes relevant to this module are:
+
+```text
+Block
+Prolongation
+Sound Repetition
+Word Repetition
+Interjection
+```
+
+---
+
+# 5. Dataset annotation handling
+
+This is one of the first things the person implementing Module 2 needs to understand.
+
+SEP-28k doesn't simply provide:
+
+```text
+clip.wav → "Block"
+```
+
+The annotations contain counts from three annotators.
+
+For example:
+
+```text
+Block = 3
+Prolongation = 0
+Sound Repetition = 0
+Word Repetition = 0
+Interjection = 0
+```
+
+is an unambiguous Block example.
+
+But you can also encounter:
+
+```text
+Block = 2
+Prolongation = 1
+```
+
+which is ambiguous for a simple single-label classifier.
+
+### Recommended initial strategy
+
+Use **unambiguous/high-confidence examples** first.
+
+For example:
+
+```text
+Block = 3
+all others = 0
+```
+
+→ `Block`
+
+or:
+
+```text
+Sound Repetition = 3
+all others = 0
+```
+
+→ `Sound Repetition`
+
+This allows the implementation to remain a straightforward five-class classification problem.
+
+Later, ambiguous examples can be investigated as a research experiment.
+
+---
+
+# 6. Dataset filtering
+
+The preprocessing script should remove:
+
+* `Unsure`
+* `Poor Audio Quality`
+* `Difficult to Understand`
+* `Natural Pause`
+* `Music`
+* `No Speech`
+
+Those aren't target classes.
+
+Then retain the five desired classes.
+
+The preprocessing script should produce something like:
+
+```csv
+file,label,speaker_id
+clip001.wav,Block,speaker01
+clip002.wav,Prolongation,speaker02
+clip003.wav,Sound Repetition,speaker01
+clip004.wav,Word Repetition,speaker03
+clip005.wav,Interjection,speaker04
+```
+
+This CSV becomes the input to the training pipeline.
+
+---
+
+# 7. Train/validation/test split
+
+Do **not** randomly split individual audio files.
+
+The split should be **speaker-independent**.
+
+For example:
+
+```text
+Training
+├── Speaker 1
+├── Speaker 2
+├── Speaker 3
+└── ...
+
+Validation
+├── Speaker 20
+├── Speaker 21
+└── ...
+
+Test
+├── Speaker 25
+├── Speaker 26
+└── ...
+```
+
+This prevents clips from the same speaker appearing in both training and testing.
+
+SEP-28k-Extended provides additional speaker information and suggested partitions that can be useful for this purpose.
+
+[SEP-28k Extended dataset](https://github.com/th-nuernberg/ml-stuttering-events-dataset-extended?utm_source=chatgpt.com)
+
+---
+
+# 8. Model architecture
+
+Keep the first implementation simple.
+
+### Recommended architecture
+
+```text
+3-sec audio
+     ↓
+Pretrained speech encoder
+     ↓
+Audio embedding
+     ↓
+Pooling
+     ↓
+Fully Connected Layer
+     ↓
+Dropout
+     ↓
+Fully Connected Layer
+     ↓
+Softmax
+     ↓
+5 classes
+```
+
+Use a pretrained speech model such as:
+
+* **WavLM**
+* **HuBERT**
+* wav2vec 2.0
+
+I would start with **WavLM Base+** or **HuBERT Base**.
+
+---
+
+# 9. Training strategy
+
+Don't immediately fine-tune the entire pretrained model.
+
+### Stage 1
+
+Freeze the pretrained encoder:
+
+```text
+Encoder
+   ↓
+FROZEN
+   ↓
+Classifier
+   ↓
+Training
+```
+
+Only train the classification layers.
+
+This is considerably easier computationally.
+
+### Stage 2
+
+If the first model performs poorly, fine-tune the final few encoder layers.
+
+```text
+Encoder
+├── Early layers → frozen
+└── Final layers → trainable
+                    ↓
+                Classifier
+```
+
+This gives you a natural experimental comparison later.
+
+---
+
+# 10. Loss function
+
+For the simple five-class classifier:
+
+```python
+CrossEntropyLoss()
+```
+
+If the dataset is significantly imbalanced:
+
+```python
+CrossEntropyLoss(weight=class_weights)
+```
+
+The class weights should be calculated from the training set only.
+
+---
+
+# 11. Training configuration
+
+A reasonable initial configuration:
+
+```yaml
+sample_rate: 16000
+duration: 3.0
+
+batch_size: 16
+learning_rate: 0.0001
+epochs: 10
+
+optimizer: AdamW
+
+num_classes: 5
+```
+
+These are **starting values**, not values that should be presented as optimal.
+
+Use validation performance to select the best checkpoint.
+
+---
+
+# 12. Model checkpoint
+
+Save:
+
+```text
+module2_best.pt
+```
+
+along with the configuration used to train it.
+
+For example:
+
+```text
+checkpoints/
+├── module2_best.pt
+└── config.yaml
+```
+
+The checkpoint should contain enough information to reproduce inference.
+
+---
+
+# 13. Evaluation metrics
+
+Don't use accuracy alone.
+
+Report:
+
+### Per-class
+
+* Precision
+* Recall
+* F1-score
+
+### Overall
+
+* Accuracy
+* Macro F1
+* Weighted F1
+
+### Visualization
+
+* Confusion matrix
+
+Example:
+
+| Class            | Precision | Recall |    F1 |
+| ---------------- | --------: | -----: | ----: |
+| Block            |         — |      — |     — |
+| Prolongation     |         — |      — |     — |
+| Sound Repetition |         — |      — |     — |
+| Word Repetition  |         — |      — |     — |
+| Interjection     |         — |      — |     — |
+| **Macro F1**     |           |        | **—** |
+
+**Macro F1 should be one of the primary metrics**, because it treats the five classes equally even if their frequencies differ.
+
+---
+
+# 14. Research experiment 1 — Conventional baseline
+
+This is the easiest useful research addition.
+
+Build a conventional baseline:
+
+```text
+3-sec audio
+     ↓
+MFCC
+     ↓
+MLP/CNN
+     ↓
+5 classes
+```
+
+Then compare it with:
+
+```text
+3-sec audio
+     ↓
+WavLM/HuBERT
+     ↓
+Classifier
+     ↓
+5 classes
+```
+
+Your experiment becomes:
+
+> **Comparison of conventional acoustic features and pretrained speech representations for stuttering-event classification.**
+
+Report:
+
+| Model              | Accuracy | Macro F1 |
+| ------------------ | -------: | -------: |
+| MFCC + classifier  |       XX |       XX |
+| WavLM + classifier |       XX |       XX |
+
+This is simple to implement but gives you a proper baseline.
+
+---
+
+# 15. Research experiment 2 — Frozen vs fine-tuned
+
+Compare:
+
+### Model A
+
+```text
+Pretrained encoder
+      ↓
+Frozen
+      ↓
+Classifier
+```
+
+versus:
+
+### Model B
+
+```text
+Pretrained encoder
+      ↓
+Fine-tune final layers
+      ↓
+Classifier
+```
+
+Report:
+
+| Configuration      | Macro F1 |
+| ------------------ | -------: |
+| Frozen encoder     |       XX |
+| Fine-tuned encoder |       XX |
+
+This gives you another controlled experiment without changing the architecture.
+
+---
+
+# 16. Research experiment 3 — Audio augmentation
+
+Train one model normally:
+
+```text
+Original training audio
+```
+
+and another with simple augmentation:
+
+```text
+Original
+   +
+noise
+   +
+volume variation
+```
+
+Potentially also small time shifts.
+
+Compare:
+
+| Training        | Macro F1 |
+| --------------- | -------: |
+| No augmentation |       XX |
+| Augmentation    |       XX |
+
+You don't need a huge augmentation pipeline.
+
+---
+
+# 17. Research experiment 4 — Cross-domain evaluation
+
+This is probably the most interesting additional experiment.
+
+SEP-28k contains both its primary dataset and a FluencyBank subset.
+
+You can investigate:
+
+> **How well does a model trained on SEP-28k generalize to FluencyBank speech?**
+
+For example:
+
+```text
+Training
+    ↓
+SEP-28k
+    ↓
+WavLM classifier
+    ↓
+Test
+    ↓
+FluencyBank subset
+```
+
+Then report:
+
+```text
+In-domain Macro F1       = XX
+Cross-domain Macro F1    = XX
+```
+
+This lets the paper discuss **domain shift**, rather than simply reporting one accuracy number.
+
+Be careful when constructing the splits so that clips originating from the same source aren't unintentionally present in both training and cross-domain testing.
+
+---
+
+# 18. Research experiment 5 — Confidence analysis
+
+Since your model outputs probabilities, you can also analyze confidence.
+
+For example:
+
+```text
+Prediction                  Confidence
+Sound Repetition            0.94
+Block                        0.87
+Prolongation                0.62
+Word Repetition             0.55
+Interjection                0.98
+```
+
+Investigate whether low-confidence predictions correspond disproportionately to:
+
+* ambiguous annotations
+* unusual speakers
+* noisy audio
+* confused classes
+
+This can become part of the error analysis rather than a separate model.
+
+---
+
+# 19. Confusion-matrix analysis
+
+This should definitely be included in the report/paper.
+
+Suppose you obtain:
+
+```text
+                 Predicted
+              B   P   SR  WR  I
+Actual B      80  5   3   2   1
+Actual P       4 75   8   3   2
+Actual SR      2  6  85   9   3
+Actual WR      1  4  12  70   5
+Actual I       3  2   4   3  88
+```
+
+You can analyze **which types are systematically confused**.
+
+That is more useful scientifically than simply saying:
+
+> "Our model achieved 82% accuracy."
+
+---
+
+# 20. Error analysis
+
+Have the implementation save incorrectly classified examples:
+
+```text
+errors/
+├── actual_block_predicted_prolongation/
+├── actual_prolongation_predicted_block/
+├── actual_sound_rep_predicted_word_rep/
+└── ...
+```
+
+Then manually inspect a small sample.
+
+Document things such as:
+
+```text
+Expected: Word Repetition
+Predicted: Sound Repetition
+
+Possible reason:
+The audio contains repeated syllables followed by
+a repeated word, making the annotation ambiguous.
+```
+
+Don't claim a cause unless the audio/annotation actually supports it. Phrase these as observed error patterns or hypotheses.
+
+---
+
+# 21. Final project structure
+
+Keep the repository straightforward:
+
+```text
+module2/
+│
+├── data/
+│   ├── train.csv
+│   ├── validation.csv
+│   └── test.csv
+│
+├── src/
+│   └── module2/
+│       ├── dataset.py
+│       ├── preprocessing.py
+│       ├── model.py
+│       ├── train.py
+│       ├── evaluate.py
+│       └── inference.py
+│
+├── configs/
+│   └── config.yaml
+│
+├── checkpoints/
+│   └── module2_best.pt
+│
+├── experiments/
+│   ├── mfcc_baseline/
+│   ├── wavlm_frozen/
+│   ├── wavlm_finetuned/
+│   └── augmentation/
+│
+├── outputs/
+│
+├── requirements.txt
+└── README.md
+```
+
+---
+
+# 22. What the person implementing it needs to deliver
+
+The final deliverables should be:
+
+### 1. Dataset preparation
+
+```text
+train.csv
+validation.csv
+test.csv
+```
+
+with speaker-independent splits.
+
+### 2. Baseline
+
+```text
+MFCC classifier
+```
+
+with evaluation results.
+
+### 3. Main model
+
+```text
+WavLM/HuBERT classifier
+```
+
+with saved checkpoint.
+
+### 4. Evaluation
+
+```text
+accuracy
+precision
+recall
+F1
+macro F1
+confusion matrix
+```
+
+### 5. Research experiments
+
+At minimum:
+
+```text
+MFCC vs pretrained model
+Frozen vs fine-tuned
+```
+
+And preferably:
+
+```text
+Cross-domain evaluation
+```
+
+### 6. Inference API
+
+```python
+classify_event("event.wav")
+```
+
+returning the agreed JSON.
+
+---
+
+## Recommended final scope
+
+I would freeze Module 2 as:
+
+```text
+                 MODULE 2
+                     │
+             3-second WAV
+                     │
+             ┌───────┴───────┐
+             │               │
+         MFCC baseline    WavLM/HuBERT
+             │               │
+             │          Frozen encoder
+             │               │
+             │          Fine-tuned encoder
+             │               │
+             └───────┬───────┘
+                     │
+                5-class output
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+      Block    Prolongation    Sound Rep.
+        │
+        ├── Word Repetition
+        │
+        └── Interjection
+```
+
+The **core implementation is simple**. The research value comes from the controlled comparisons, speaker-independent evaluation, cross-domain evaluation, and error analysis—not from making the neural network unnecessarily complicated.
+
+
+This is for Pranav
